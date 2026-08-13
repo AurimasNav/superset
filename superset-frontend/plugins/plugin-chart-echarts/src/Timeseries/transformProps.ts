@@ -46,6 +46,7 @@ import {
   NumberFormats,
 } from '@superset-ui/core';
 import { GenericDataType } from '@apache-superset/core/common';
+import { isThemeDark } from '@apache-superset/core/theme';
 import {
   extractExtraMetrics,
   getOriginalSeries,
@@ -62,6 +63,7 @@ import {
   EchartsTimeseriesChartProps,
   EchartsTimeseriesFormData,
   EchartsTimeseriesSeriesType,
+  BarValueLabelPosition,
   OrientationType,
   TimeseriesChartTransformedProps,
 } from './types';
@@ -289,6 +291,7 @@ export default function transformProps(
     seriesType,
     showLegend,
     showValue,
+    valueLabelPosition,
     size,
     colorByPrimaryAxis,
     sliceId,
@@ -735,6 +738,7 @@ export default function transformProps(
               labelMap?.[seriesName]?.[0],
             ) ?? defaultFormatter),
         showValue,
+        valueLabelPosition,
         onlyTotal,
         totalStackedValues: sortedTotalValues,
         showValueIndexes,
@@ -1368,6 +1372,10 @@ export default function transformProps(
 
   const echartOptions: EChartsCoreOption = {
     useUTC: true,
+    ...(seriesType === EchartsTimeseriesSeriesType.Bar &&
+    valueLabelPosition === BarValueLabelPosition.Auto
+      ? { darkMode: isThemeDark(theme) }
+      : {}),
     grid: {
       ...defaultGrid,
       ...padding,

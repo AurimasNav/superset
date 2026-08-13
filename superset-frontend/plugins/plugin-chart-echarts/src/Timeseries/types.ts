@@ -51,6 +51,14 @@ export enum EchartsTimeseriesSeriesType {
   End = 'end',
 }
 
+export enum BarValueLabelPosition {
+  Auto = 'auto',
+  InsideEnd = 'insideEnd',
+  OutsideEnd = 'outsideEnd',
+  InsideCenter = 'insideCenter',
+  InsideBase = 'insideBase',
+}
+
 export type EchartsTimeseriesFormData = QueryFormData & {
   annotationLayers: AnnotationLayer[];
   area: boolean;
@@ -97,6 +105,7 @@ export type EchartsTimeseriesFormData = QueryFormData & {
   xAxisLabelRotation: number;
   xAxisLabelInterval: number | string;
   showValue: boolean;
+  valueLabelPosition: BarValueLabelPosition;
   onlyTotal: boolean;
   showExtraControls: boolean;
   percentageThreshold: number;
