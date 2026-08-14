@@ -528,6 +528,7 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
     time_groupby_inline = False
     limit_method = LimitMethod.FORCE_LIMIT
     supports_multivalues_insert = False
+    supports_temporal_column_shift: bool = False
     allows_joins = True
     allows_subqueries = True
     allows_alias_in_select = True
@@ -1203,6 +1204,19 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
             time_expr = cls._apply_year_to_dttm(time_expr)
 
         return TimestampExpression(time_expr, col, type_=col.type)
+
+    @classmethod
+    def get_temporal_column_shift_expr(
+        cls,
+        col: ColumnClause,
+        offset_hours: int,
+    ) -> TimestampExpression:
+        """Shift a temporal SQL expression by a bounded number of hours."""
+        return TimestampExpression(
+            f"{{col}} + INTERVAL '{offset_hours}' HOUR",
+            col,
+            type_=col.type,
+        )
 
     @classmethod
     def _apply_year_to_dttm(cls, time_expr: str) -> str:

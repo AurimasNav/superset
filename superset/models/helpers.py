@@ -177,6 +177,21 @@ SERIES_LIMIT_SUBQ_ALIAS = "series_limit"
 # Offset join column suffix used for joining offset results
 OFFSET_JOIN_COLUMN_SUFFIX = "__offset_join_column_"
 
+
+def get_effective_hours_offset(
+    db_engine_spec: type["BaseEngineSpec"],
+    column_type: str | None,
+    offset_hours: int,
+    db_extra: dict[str, Any] | None = None,
+) -> int:
+    """Return the dataset offset representable by a temporal column's type."""
+    sqla_type = db_engine_spec.get_sqla_column_type(column_type, db_extra=db_extra)
+    if isinstance(sqla_type, sa.Date):
+        # int() deliberately truncates toward zero; // would turn -1h into -24h.
+        return int(offset_hours / 24) * 24
+    return offset_hours
+
+
 # Right suffix used for joining offset results
 R_SUFFIX = "__right_suffix"
 
@@ -1294,6 +1309,7 @@ class QueryResult:  # pylint: disable=too-few-public-methods
         errors: Optional[list[dict[str, Any]]] = None,
         from_dttm: Optional[datetime] = None,
         to_dttm: Optional[datetime] = None,
+        sql_shifted_temporal_labels: set[str] | None = None,
     ) -> None:
         self.df = df
         self.query = query
@@ -1306,6 +1322,7 @@ class QueryResult:  # pylint: disable=too-few-public-methods
         self.errors = errors or []
         self.from_dttm = from_dttm
         self.to_dttm = to_dttm
+        self.sql_shifted_temporal_labels = sql_shifted_temporal_labels or set()
         self.sql_rowcount = len(self.df.index) if not self.df.empty else 0
 
 
@@ -1405,6 +1422,7 @@ class QueryStringExtended(NamedTuple):
     labels_expected: list[str]
     prequeries: list[str]
     sql: str
+    sql_shifted_temporal_labels: set[str]
 
 
 class SqlaQuery(NamedTuple):
@@ -1416,6 +1434,7 @@ class SqlaQuery(NamedTuple):
     labels_expected: list[str]
     prequeries: list[str]
     sqla_query: Select
+    sql_shifted_temporal_labels: set[str]
 
 
 class ExploreMixin:  # pylint: disable=too-many-public-methods
@@ -1770,6 +1789,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             labels_expected=sqlaq.labels_expected,
             prequeries=sqlaq.prequeries,
             sql=sql,
+            sql_shifted_temporal_labels=sqlaq.sql_shifted_temporal_labels,
         )
 
     def _normalize_prequery_result_type(
@@ -1974,6 +1994,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             query=sql,
             errors=errors,
             error_message=error_message,
+            sql_shifted_temporal_labels=query_str_ext.sql_shifted_temporal_labels,
         )
 
     def exc_query(self, qry: Any) -> QueryResult:
@@ -2043,6 +2064,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         df: pd.DataFrame,
         query_object: QueryObject,
         already_collected: set[str],
+        sql_shifted_temporal_labels: set[str] | None = None,
     ) -> list[DateColumn]:
         """``DateColumn`` entries that only need the dataset HOURS OFFSET (and any
         time shift) applied, for temporal columns the database already returns as
@@ -2062,6 +2084,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         ):
             return []
 
+        sql_shifted_temporal_labels = sql_shifted_temporal_labels or set()
         extra: list[DateColumn] = []
         for label in df.columns:
             if label in already_collected or label == DTTM_ALIAS:
@@ -2080,7 +2103,9 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 extra.append(
                     DateColumn(
                         timestamp_format=None,
-                        offset=self.offset,
+                        offset=(
+                            0 if label in sql_shifted_temporal_labels else self.offset
+                        ),
                         time_shift=query_object.time_shift,
                         col_label=label,
                     )
@@ -2088,15 +2113,22 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 already_collected.add(label)
         return extra
 
-    def normalize_df(self, df: pd.DataFrame, query_object: QueryObject) -> pd.DataFrame:
+    def normalize_df(
+        self,
+        df: pd.DataFrame,
+        query_object: QueryObject,
+        sql_shifted_temporal_labels: set[str] | None = None,
+    ) -> pd.DataFrame:
         """
         Normalize the dataframe by converting datetime columns and ensuring
         numerical metrics.
 
         :param df: The dataframe to normalize
         :param query_object: The query object with metadata about columns
+        :param sql_shifted_temporal_labels: labels already shifted in generated SQL
         :return: Normalized dataframe
         """
+        sql_shifted_temporal_labels = sql_shifted_temporal_labels or set()
         labels = self._collect_dttm_labels(query_object)
 
         # ``get_dataset_timezone`` lives on ``ExploreMixin``; datasource doubles
@@ -2108,7 +2140,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         dttm_cols = [
             DateColumn(
                 timestamp_format=fmt,
-                offset=self.offset,
+                offset=0 if label in sql_shifted_temporal_labels else self.offset,
                 time_shift=query_object.time_shift,
                 timezone=dataset_timezone,
                 col_label=label,
@@ -2120,7 +2152,9 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             dttm_cols.append(
                 DateColumn.get_legacy_time_column(
                     timestamp_format=self._python_date_format(query_object.granularity),
-                    offset=self.offset,
+                    offset=(
+                        0 if DTTM_ALIAS in sql_shifted_temporal_labels else self.offset
+                    ),
                     time_shift=query_object.time_shift,
                     timezone=dataset_timezone,
                 )
@@ -2128,7 +2162,10 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
 
         dttm_cols.extend(
             self._offset_only_dttm_cols(
-                df, query_object, {col.col_label for col in dttm_cols}
+                df,
+                query_object,
+                {col.col_label for col in dttm_cols},
+                sql_shifted_temporal_labels,
             )
         )
 
@@ -2174,7 +2211,11 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         df = result.df
         if not df.empty:
             # Normalize datetime columns and metrics
-            df = self.normalize_df(df, query_object)
+            df = self.normalize_df(
+                df,
+                query_object,
+                result.sql_shifted_temporal_labels,
+            )
 
             # Process time offsets if requested
             if query_object.time_offsets:
@@ -2484,7 +2525,9 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             else:
                 # 1. normalize df, set dttm column
                 offset_metrics_df = self.normalize_df(
-                    offset_metrics_df, query_object_clone
+                    offset_metrics_df,
+                    query_object_clone,
+                    result.sql_shifted_temporal_labels,
                 )
 
                 # 2. rename extra query columns
@@ -3417,6 +3460,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         col: AdhocColumn,
         force_type_check: bool = False,
         template_processor: Optional[BaseTemplateProcessor] = None,
+        apply_dataset_offset: bool = False,
+        sql_shifted_temporal_labels: set[str] | None = None,
     ) -> tuple[ColumnElement, Optional[GenericDataType]]:
         raise NotImplementedError()
 
@@ -3601,6 +3646,12 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 dataset_timezone = None
 
         if not dataset_timezone and (offset_hours := getattr(self, "offset", 0) or 0):
+            offset_hours = get_effective_hours_offset(
+                self.db_engine_spec,
+                time_col.type,
+                offset_hours,
+                db_extra=self.db_extra,
+            )
             if start_dttm is not None:
                 start_dttm = start_dttm - timedelta(hours=offset_hours)
             if end_dttm is not None:
@@ -3957,6 +4008,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         template_kwargs["applied_filters"] = applied_template_filters
         template_processor = self.get_template_processor(**template_kwargs)
         prequeries: list[str] = []
+        sql_shifted_temporal_labels: set[str] = set()
         orderby = orderby or []
         need_groupby = bool(metrics is not None or groupby)
         metrics = metrics or []
@@ -4065,6 +4117,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 col, _unused = self.adhoc_column_to_sqla(
                     col=adhoc_columns_by_label[col],
                     template_processor=template_processor,
+                    apply_dataset_offset=True,
+                    sql_shifted_temporal_labels=sql_shifted_temporal_labels,
                 )
             elif col in metrics_by_name:
                 col = metrics_by_name[col].get_sqla_col(
@@ -4104,6 +4158,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                             time_grain=time_grain,
                             label=selected,
                             template_processor=template_processor,
+                            apply_dataset_offset=True,
+                            sql_shifted_temporal_labels=sql_shifted_temporal_labels,
                         )
                     # if groupby field equals a selected column
                     elif selected in columns_by_name:
@@ -4125,6 +4181,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                     outer, _unused = self.adhoc_column_to_sqla(
                         col=selected,
                         template_processor=template_processor,
+                        apply_dataset_offset=True,
+                        sql_shifted_temporal_labels=sql_shifted_temporal_labels,
                     )
                 groupby_all_columns[outer.name] = outer
                 if (
@@ -4165,6 +4223,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                     outer, _unused = self.adhoc_column_to_sqla(
                         col=selected,
                         template_processor=template_processor,
+                        apply_dataset_offset=True,
+                        sql_shifted_temporal_labels=sql_shifted_temporal_labels,
                     )
                     select_exprs.append(outer)
                     continue
@@ -4200,7 +4260,10 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
 
             if is_timeseries:
                 timestamp = dttm_col.get_timestamp_expression(
-                    time_grain=time_grain, template_processor=template_processor
+                    time_grain=time_grain,
+                    template_processor=template_processor,
+                    apply_dataset_offset=True,
+                    sql_shifted_temporal_labels=sql_shifted_temporal_labels,
                 )
                 # always put timestamp as the first column
                 select_exprs.insert(0, timestamp)
@@ -4865,4 +4928,5 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             labels_expected=labels_expected,
             sqla_query=qry,
             prequeries=prequeries,
+            sql_shifted_temporal_labels=sql_shifted_temporal_labels,
         )
