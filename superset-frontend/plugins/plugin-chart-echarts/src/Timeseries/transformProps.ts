@@ -30,6 +30,7 @@ import {
   DTTM_ALIAS,
   ensureIsArray,
   tooltipHtml,
+  truncateLabel,
   getCustomFormatter,
   getMetricLabel,
   getNumberFormatter,
@@ -306,6 +307,7 @@ export default function transformProps(
     tooltipSortByMetric,
     showTooltipTotal,
     showTooltipPercentage,
+    tooltipTruncation,
     truncateXAxis,
     truncateYAxis,
     xAxis: xAxisOrig,
@@ -1459,6 +1461,7 @@ export default function transformProps(
               seriesName: key,
               formatter,
               marker,
+              truncation: tooltipTruncation,
             });
 
             const annotationRow = annotationLayers.some(
@@ -1492,7 +1495,12 @@ export default function transformProps(
           }
           rows.push(totalRow);
         }
-        return tooltipHtml(rows, tooltipFormatter(xValue), focusedRow);
+        return tooltipHtml(
+          rows,
+          truncateLabel(tooltipFormatter(xValue), tooltipTruncation),
+          focusedRow,
+          tooltipTruncation,
+        );
       },
     },
     legend: {

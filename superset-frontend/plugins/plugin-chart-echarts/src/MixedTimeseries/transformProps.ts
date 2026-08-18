@@ -40,6 +40,7 @@ import {
   TimeseriesChartDataResponseResult,
   TimeseriesDataRecord,
   tooltipHtml,
+  truncateLabel,
   ValueFormatter,
 } from '@superset-ui/core';
 import { GenericDataType } from '@apache-superset/core/common';
@@ -208,6 +209,7 @@ export default function transformProps(
     zoomable,
     richTooltip,
     tooltipSortByMetric,
+    tooltipTruncation,
     xAxisBounds,
     xAxisLabelRotation,
     xAxisLabelInterval,
@@ -910,13 +912,19 @@ export default function transformProps(
               formatter: primarySeries.has(key)
                 ? tooltipFormatter
                 : tooltipFormatterSecondary,
+              truncation: tooltipTruncation,
             });
             rows.push(row);
             if (key === focusedSeries) {
               focusedRow = rows.length - 1;
             }
           });
-        return tooltipHtml(rows, tooltipFormatter(xValue), focusedRow);
+        return tooltipHtml(
+          rows,
+          truncateLabel(tooltipFormatter(xValue), tooltipTruncation),
+          focusedRow,
+          tooltipTruncation,
+        );
       },
     },
     legend: {
